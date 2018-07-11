@@ -1,0 +1,15 @@
+{
+    "files.associations": {
+        "ios": "cpp",
+        "__locale": "cpp",
+        "__string": "cpp",
+        "string": "cpp",
+        "string_view": "cpp",
+        "memory": "cpp",
+        "random": "cpp",
+        "locale": "cpp",
+        "bitset": "cpp",
+        "__functional_03": "c",
+        "functional": "c"
+    }
+}
