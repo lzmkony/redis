@@ -640,7 +640,7 @@ typedef struct redisDb {
 
     // 当前正在阻塞的键
     dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP)*/
-    // 解除阻塞的键
+    // 解除阻塞的键  准备好数据可以解除阻塞状态的键和相应的client
     dict *ready_keys;           /* Blocked keys that received a PUSH */
     // 正在被watch 监控的键
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
