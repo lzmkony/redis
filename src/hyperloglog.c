@@ -339,7 +339,7 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected\r\n";
 #define HLL_DENSE_GET_REGISTER(target,p,regnum) do { \
     uint8_t *_p = (uint8_t*) p; \
     unsigned long _byte = regnum*HLL_BITS/8; \
-    unsigned long _fb = regnum*HLL_BITS&7; \
+    unsigned long _fb = regnum*HLL_BITS&7; /*此处其实是模8*/\
     unsigned long _fb8 = 8 - _fb; \
     unsigned long b0 = _p[_byte]; \
     unsigned long b1 = _p[_byte+1]; \
@@ -354,10 +354,10 @@ static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected\r\n";
     unsigned long _fb = regnum*HLL_BITS&7; \
     unsigned long _fb8 = 8 - _fb; \
     unsigned long _v = val; \
-    _p[_byte] &= ~(HLL_REGISTER_MAX << _fb); \
-    _p[_byte] |= _v << _fb; \
-    _p[_byte+1] &= ~(HLL_REGISTER_MAX >> _fb8); \
-    _p[_byte+1] |= _v >> _fb8; \
+    _p[_byte] &= ~(HLL_REGISTER_MAX << _fb); /*上一个桶在这个byte中不变*/\
+    _p[_byte] |= _v << _fb; /*基数赋值给这个byte中属于这个桶的位*/\
+    _p[_byte+1] &= ~(HLL_REGISTER_MAX >> _fb8); /*这个桶在这个byte中的位置0*/\
+    _p[_byte+1] |= _v >> _fb8; /*基数赋值给这个byte中属于这个桶的位*/\
 } while(0)
 
 /* Macros to access the sparse representation.
@@ -445,6 +445,7 @@ uint64_t MurmurHash64A (const void * key, int len, unsigned int seed) {
     return h;
 }
 
+//对于输入的任意字符串，得到桶数和第一个1出现的位置
 /* Given a string element to add to the HyperLogLog, returns the length
  * of the pattern 000..1 of the element hash. As a side effect 'regp' is
  * set to the register index this element hashes to. */
@@ -464,12 +465,12 @@ int hllPatLen(unsigned char *ele, size_t elesize, long *regp) {
      * This may sound like inefficient, but actually in the average case
      * there are high probabilities to find a 1 after a few iterations. */
     hash = MurmurHash64A(ele,elesize,0xadc83b19ULL);
-    index = hash & HLL_P_MASK; /* Register index. */
-    hash >>= HLL_P; /* Remove bits used to address the register. */
+    index = hash & HLL_P_MASK; /* Register index. *///这是哪个桶0开始
+    hash >>= HLL_P; /* Remove bits used to address the register. *///取高50位
     hash |= ((uint64_t)1<<HLL_Q); /* Make sure the loop terminates
                                      and count will be <= Q+1. */
     bit = 1;
-    count = 1; /* Initialized to 1 since we count the "00000...1" pattern. */
+    count = 1; /* Initialized to 1 since we count the "00000...1" pattern. *///找第一个1出现的位置，1开始
     while((hash & bit) == 0) {
         count++;
         bit <<= 1;
@@ -490,6 +491,7 @@ int hllPatLen(unsigned char *ele, size_t elesize, long *regp) {
  * The function always succeed, however if as a result of the operation
  * the approximated cardinality changed, 1 is returned. Otherwise 0
  * is returned. */
+//比较基数是否大于当前记录的值，如果大就改变当前记录的值
 int hllDenseSet(uint8_t *registers, long index, uint8_t count) {
     uint8_t oldcount;
 
@@ -510,11 +512,12 @@ int hllDenseSet(uint8_t *registers, long index, uint8_t count) {
  * element in order to retrieve the index and zero-run count. */
 int hllDenseAdd(uint8_t *registers, unsigned char *ele, size_t elesize) {
     long index;
-    uint8_t count = hllPatLen(ele,elesize,&index);
+    uint8_t count = hllPatLen(ele,elesize,&index);//计算字符串应该属于哪一个桶和基数
     /* Update the register if this element produced a longer run of zeroes. */
-    return hllDenseSet(registers,index,count);
+    return hllDenseSet(registers,index,count);//保存基数（考虑是否大于当前基数）
 }
 
+//统计
 /* Compute the register histogram in the dense representation. */
 void hllDenseRegHisto(uint8_t *registers, int* reghisto) {
     int j;
@@ -545,6 +548,7 @@ void hllDenseRegHisto(uint8_t *registers, int* reghisto) {
             r14 = (r[10] >> 4 | r[11] << 4) & 63;
             r15 = (r[11] >> 2) & 63;
 
+            //统计各个桶的基数出现的次数
             reghisto[r0]++;
             reghisto[r1]++;
             reghisto[r2]++;
@@ -562,11 +566,13 @@ void hllDenseRegHisto(uint8_t *registers, int* reghisto) {
             reghisto[r14]++;
             reghisto[r15]++;
 
-            r += 12;
+            r += 12;//移动16个寄存器的位置：12*8=16*6
         }
     } else {
+        //寄存器个数不为16384，就一个一个遍历
         for(j = 0; j < HLL_REGISTERS; j++) {
             unsigned long reg;
+            // 取第j个寄存器的值
             HLL_DENSE_GET_REGISTER(reg,registers,j);
             reghisto[reg]++;
         }
@@ -658,6 +664,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
 
     /* If the count is too big to be representable by the sparse representation
      * switch to dense representation. */
+    // 基数大于最大值32，转变为密集型
     if (count > HLL_SPARSE_VAL_MAX_VALUE) goto promote;
 
     /* When updating a sparse representation, sometimes we may need to
@@ -665,6 +672,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
      * into XZERO-VAL-XZERO). Make sure there is enough space right now
      * so that the pointers we take during the execution of the function
      * will be valid all the time. */
+    // 为啥不是增加两个字节：XZERO=2字节，XZERO-VAL-XZERO=5字节
     o->ptr = sdsMakeRoomFor(o->ptr,3);
 
     /* Step 1: we need to locate the opcode we need to modify to check
@@ -673,9 +681,10 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
     end = p + sdslen(o->ptr) - HLL_HDR_SIZE;
 
     first = 0;
-    prev = NULL; /* Points to previos opcode at the end of the loop. */
+    prev = NULL; /* Points to previous opcode at the end of the loop. */
     next = NULL; /* Points to the next opcode at the end of the loop. */
     span = 0;
+    // 循环找当前寄存器（index）属于哪一个标记（XZERO/ZERO/VAL）表示
     while(p < end) {
         long oplen;
 
@@ -739,13 +748,16 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
      * B) If it is a VAL opcode with len = 1 (representing only our
      *    register) and the value is less than 'count', we just update it
      *    since this is a trivial case. */
+    // 如果是VAL类型：基数较小或者是这个字节管理的第一个寄存器
     if (is_val) {
         oldcount = HLL_SPARSE_VAL_VALUE(p);
         /* Case A. */
+        // 
         if (oldcount >= count) return 0;
 
         /* Case B. */
         if (runlen == 1) {
+            // 设置VAL类型：基数为count，个数为1
             HLL_SPARSE_VAL_SET(p,count,1);
             goto updated;
         }
@@ -753,6 +765,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
 
     /* C) Another trivial to handle case is a ZERO opcode with a len of 1.
      * We can just replace it with a VAL opcode with our value and len of 1. */
+    // 如果是zero类型且这个寄存器是这个字节管理的第一个寄存器
     if (is_zero && runlen == 1) {
         HLL_SPARSE_VAL_SET(p,count,1);
         goto updated;
@@ -764,7 +777,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
      * and is either currently represented by a VAL opcode with len > 1,
      * by a ZERO opcode with len > 1, or by an XZERO opcode.
      *
-     * In those cases the original opcode must be split into muliple
+     * In those cases the original opcode must be split into multiple
      * opcodes. The worst case is an XZERO split in the middle resuling into
      * XZERO - VAL - XZERO, so the resulting sequence max length is
      * 5 bytes.
@@ -777,32 +790,40 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
     int last = first+span-1; /* Last register covered by the sequence. */
     int len;
 
+    // 全是0类型
     if (is_zero || is_xzero) {
         /* Handle splitting of ZERO / XZERO. */
         if (index != first) {
             len = index-first;
+            // 如果相差超过一个zero能够表示的最大寄存器数，就拆分为XZERO
             if (len > HLL_SPARSE_ZERO_MAX_LEN) {
                 HLL_SPARSE_XZERO_SET(n,len);
                 n += 2;
             } else {
+                // 否则拆分为ZERO
                 HLL_SPARSE_ZERO_SET(n,len);
                 n++;
             }
         }
+        // 中间插入一个VAL类型
         HLL_SPARSE_VAL_SET(n,count,1);
         n++;
         if (index != last) {
             len = last-index;
+            // 剩下的如果超过zero能够表示的最大寄存器数，就拆分为XZERO
             if (len > HLL_SPARSE_ZERO_MAX_LEN) {
                 HLL_SPARSE_XZERO_SET(n,len);
                 n += 2;
             } else {
+                // 否则拆分为ZERO
                 HLL_SPARSE_ZERO_SET(n,len);
                 n++;
             }
         }
     } else {
+        // VAL类型
         /* Handle splitting of VAL. */
+        // 当前VAL类型的基数
         int curval = HLL_SPARSE_VAL_VALUE(p);
 
         if (index != first) {
@@ -823,14 +844,19 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
      *
      * Note that we already allocated space on the sds string
      * calling sdsMakeRoomFor(). */
-     int seqlen = n-seq;
-     int oldlen = is_xzero ? 2 : 1;
-     int deltalen = seqlen-oldlen;
+     int seqlen = n-seq;//使用多少个字节
+     int oldlen = is_xzero ? 2 : 1;//以前使用的字节
+     int deltalen = seqlen-oldlen;//增加的字节数
 
+     // 分配的内存大小如果大于上限大小配置hll-sparse-max-bytes 3000(default)
+     // 转换为密集型dense
      if (deltalen > 0 &&
          sdslen(o->ptr)+deltalen > server.hll_sparse_max_bytes) goto promote;
+     // 将next到end的数据向后移动增加的字节数deltalen，开始分配了3字节内存>=deltalen的大小
      if (deltalen && next) memmove(next+deltalen,next,end-next);
+     // 扩展ptr
      sdsIncrLen(o->ptr,deltalen);
+     // 将拆分的寄存器标签保存到上一个寄存器后
      memcpy(p,seq,seqlen);
      end += deltalen;
 
@@ -852,19 +878,27 @@ updated:
         }
         /* We need two adjacent VAL opcodes to try a merge, having
          * the same value, and a len that fits the VAL opcode max len. */
+        // 此时的p一定是VAL类型
         if (p+1 < end && HLL_SPARSE_IS_VAL(p+1)) {
             int v1 = HLL_SPARSE_VAL_VALUE(p);
             int v2 = HLL_SPARSE_VAL_VALUE(p+1);
+            // 基数相同
             if (v1 == v2) {
                 int len = HLL_SPARSE_VAL_LEN(p)+HLL_SPARSE_VAL_LEN(p+1);
+                // 合并之后的寄存器个数不大于限制的最大值11111
                 if (len <= HLL_SPARSE_VAL_MAX_LEN) {
+                    // 设置p+1标签的值
                     HLL_SPARSE_VAL_SET(p+1,v1,len);
+                    // 将p+1及其之后的数据移动到p的位置
                     memmove(p,p+1,end-p);
+                    // 截取ptr的大小
                     sdsIncrLen(o->ptr,-1);
+                    // 移动end节点
                     end--;
                     /* After a merge we reiterate without incrementing 'p'
                      * in order to try to merge the just merged value with
                      * a value on its right. */
+                    // 此时p是新的节点，不需要向后移动（p++）
                     continue;
                 }
             }
@@ -887,7 +921,8 @@ promote: /* Promote to dense representation. */
      *
      * Note that this in turn means that PFADD will make sure the command
      * is propagated to slaves / AOF, so if there is a sparse -> dense
-     * convertion, it will be performed in all the slaves as well. */
+     * conversion, it will be performed in all the slaves as well. */
+    
     int dense_retval = hllDenseSet(hdr->registers,index,count);
     serverAssert(dense_retval == 1);
     return dense_retval;
