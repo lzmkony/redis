@@ -644,7 +644,7 @@ typedef struct redisDb {
     dict *ready_keys;           /* Blocked keys that received a PUSH */
     // 正在被watch 监控的键
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
-    // 数据库编号 就是我们平时 select 0 -16 
+    // 数据库编号 就是我们平时 select 0 -15
     int id;                     /* Database ID */
     // 数据库的平均ttl
     long long avg_ttl;          /* Average TTL, just for stats */
