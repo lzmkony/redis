@@ -40,7 +40,9 @@
 
 /* Update LFU when an object is accessed.
  * Firstly, decrement the counter if the decrement time is reached.
- * Then logarithmically increment the counter, and update the access time. */
+ * Then logarithmically increment the counter, and update the access time. */\
+
+ // 访问key 之后更新LFU
 void updateLFU(robj *val) {
     unsigned long counter = LFUDecrAndReturn(val);
     counter = LFULogIncr(counter);
