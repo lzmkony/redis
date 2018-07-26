@@ -587,37 +587,50 @@ void hllDenseRegHisto(uint8_t *registers, int* reghisto) {
  *
  * The function returns C_OK if the sparse representation was valid,
  * otherwise C_ERR is returned if the representation was corrupted. */
+// 稀疏型转换为密集型，统计所有的寄存器（桶）
 int hllSparseToDense(robj *o) {
+    // 取redis对象的值
     sds sparse = o->ptr, dense;
+    // 转换为hll类型
     struct hllhdr *hdr, *oldhdr = (struct hllhdr*)sparse;
     int idx = 0, runlen, regval;
     uint8_t *p = (uint8_t*)sparse, *end = p+sdslen(sparse);
 
     /* If the representation is already the right one return ASAP. */
+    // 已经是密集型，直接返回
     hdr = (struct hllhdr*) sparse;
     if (hdr->encoding == HLL_DENSE) return C_OK;
 
     /* Create a string of the right size filled with zero bytes.
      * Note that the cached cardinality is set to 0 as a side effect
      * that is exactly the cardinality of an empty HLL. */
+    // 分配密集型所需空间
     dense = sdsnewlen(NULL,HLL_DENSE_SIZE);
     hdr = (struct hllhdr*) dense;
+    // 将稀疏性的值赋值给密集型，主要是复制头部信息
     *hdr = *oldhdr; /* This will copy the magic and cached cardinality. */
     hdr->encoding = HLL_DENSE;
 
     /* Now read the sparse representation and set non-zero registers
      * accordingly. */
+    // 除开头部信息，直接从寄存器开始遍历，inx表示的是第几个寄存器
     p += HLL_HDR_SIZE;
     while(p < end) {
         if (HLL_SPARSE_IS_ZERO(p)) {
+            // ZERO类型，直接跳过一个字节
             runlen = HLL_SPARSE_ZERO_LEN(p);
             idx += runlen;
             p++;
         } else if (HLL_SPARSE_IS_XZERO(p)) {
+            // XZERO类型，直接跳过两个字节
             runlen = HLL_SPARSE_XZERO_LEN(p);
             idx += runlen;
             p += 2;
         } else {
+            /* 
+             * VAL类型，得到连续的runlen个寄存器的值为regval
+             * 处理方式为循环添加密集型寄存器（idx为寄存器编号，regval为值）
+             */
             runlen = HLL_SPARSE_VAL_LEN(p);
             regval = HLL_SPARSE_VAL_VALUE(p);
             while(runlen--) {
@@ -630,12 +643,14 @@ int hllSparseToDense(robj *o) {
 
     /* If the sparse representation was valid, we expect to find idx
      * set to HLL_REGISTERS. */
+    // 寄存器个数错误
     if (idx != HLL_REGISTERS) {
         sdsfree(dense);
         return C_ERR;
     }
 
     /* Free the old representation and set the new one. */
+    // 释放稀疏型寄存器占用的空间，指针指向密集型空间
     sdsfree(o->ptr);
     o->ptr = dense;
     return C_OK;
@@ -672,7 +687,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
      * into XZERO-VAL-XZERO). Make sure there is enough space right now
      * so that the pointers we take during the execution of the function
      * will be valid all the time. */
-    // 为啥不是增加两个字节：XZERO=2字节，XZERO-VAL-XZERO=5字节
+    // 为什么不是增加两个字节：XZERO=2字节，XZERO-VAL-XZERO=5字节
     o->ptr = sdsMakeRoomFor(o->ptr,3);
 
     /* Step 1: we need to locate the opcode we need to modify to check
@@ -827,6 +842,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
         int curval = HLL_SPARSE_VAL_VALUE(p);
 
         if (index != first) {
+            // 插入的寄存器的index减去这个字节最开始的寄存器的index
             len = index-first;
             HLL_SPARSE_VAL_SET(n,curval,len);
             n++;
@@ -834,6 +850,7 @@ int hllSparseSet(robj *o, long index, uint8_t count) {
         HLL_SPARSE_VAL_SET(n,count,1);
         n++;
         if (index != last) {
+            // 这个字节结束的寄存器的index减去插入的寄存器的index
             len = last-index;
             HLL_SPARSE_VAL_SET(n,curval,len);
             n++;
@@ -922,7 +939,7 @@ promote: /* Promote to dense representation. */
      * Note that this in turn means that PFADD will make sure the command
      * is propagated to slaves / AOF, so if there is a sparse -> dense
      * conversion, it will be performed in all the slaves as well. */
-    
+    // 将寄存器的值设置进去
     int dense_retval = hllDenseSet(hdr->registers,index,count);
     serverAssert(dense_retval == 1);
     return dense_retval;
@@ -936,6 +953,7 @@ promote: /* Promote to dense representation. */
  * the hashshing of the elmenet to obtain the index and zeros run length. */
 int hllSparseAdd(robj *o, unsigned char *ele, size_t elesize) {
     long index;
+    // 得到寄存器的index和寄存器的值
     uint8_t count = hllPatLen(ele,elesize,&index);
     /* Update the register if this element produced a longer run of zeroes. */
     return hllSparseSet(o,index,count);
@@ -1044,6 +1062,7 @@ double hllTau(double x) {
  * is, hdr->registers will point to an uint8_t array of HLL_REGISTERS element.
  * This is useful in order to speedup PFCOUNT when called against multiple
  * keys (no need to work with 6-bit integers encoding). */
+// 基数统计
 uint64_t hllCount(struct hllhdr *hdr, int *invalid) {
     double m = HLL_REGISTERS;
     double E;
@@ -1051,6 +1070,7 @@ uint64_t hllCount(struct hllhdr *hdr, int *invalid) {
     int reghisto[HLL_Q+2] = {0};
 
     /* Compute register histogram */
+    //不同类型不同的统计方式，reghisto保存统计结果
     if (hdr->encoding == HLL_DENSE) {
         hllDenseRegHisto(hdr->registers,reghisto);
     } else if (hdr->encoding == HLL_SPARSE) {
@@ -1099,6 +1119,7 @@ int hllMerge(uint8_t *max, robj *hll) {
     int i;
 
     if (hdr->encoding == HLL_DENSE) {
+        // 密集型：遍历寄存器，比较寄存器的值，将最大值赋值给max
         uint8_t val;
 
         for (i = 0; i < HLL_REGISTERS; i++) {
@@ -1106,6 +1127,7 @@ int hllMerge(uint8_t *max, robj *hll) {
             if (val > max[i]) max[i] = val;
         }
     } else {
+        // 稀疏性：遍历寄存器，比较寄存器的值，将最大值赋值给max
         uint8_t *p = hll->ptr, *end = p + sdslen(hll->ptr);
         long runlen, regval;
 
@@ -1113,14 +1135,17 @@ int hllMerge(uint8_t *max, robj *hll) {
         i = 0;
         while(p < end) {
             if (HLL_SPARSE_IS_ZERO(p)) {
+                // ZERO类型，直接跳过
                 runlen = HLL_SPARSE_ZERO_LEN(p);
                 i += runlen;
                 p++;
             } else if (HLL_SPARSE_IS_XZERO(p)) {
+                // XZERO类型，直接跳过
                 runlen = HLL_SPARSE_XZERO_LEN(p);
                 i += runlen;
                 p += 2;
             } else {
+                // VAL类型，比较大小
                 runlen = HLL_SPARSE_VAL_LEN(p);
                 regval = HLL_SPARSE_VAL_VALUE(p);
                 while(runlen--) {
@@ -1130,6 +1155,7 @@ int hllMerge(uint8_t *max, robj *hll) {
                 p++;
             }
         }
+        // 寄存器个数不等，返回错误
         if (i != HLL_REGISTERS) return C_ERR;
     }
     return C_OK;
@@ -1139,11 +1165,16 @@ int hllMerge(uint8_t *max, robj *hll) {
 
 /* Create an HLL object. We always create the HLL using sparse encoding.
  * This will be upgraded to the dense representation as needed. */
+// 初始化一个HLL Object
 robj *createHLLObject(void) {
     robj *o;
     struct hllhdr *hdr;
     sds s;
     uint8_t *p;
+    /*
+     * 计算方式：一共有多少个寄存器/一个XZERO能表示多少个寄存器=需要多少个XERO，然后乘以2表示需要多少个字节
+     * 但是程序中的除法是向下取整的，为了变为向上取整，加上了HLL_SPARSE_XZERO_MAX_LEN-1
+     */
     int sparselen = HLL_HDR_SIZE +
                     (((HLL_REGISTERS+(HLL_SPARSE_XZERO_MAX_LEN-1)) /
                      HLL_SPARSE_XZERO_MAX_LEN)*2);
@@ -1152,8 +1183,11 @@ robj *createHLLObject(void) {
     /* Populate the sparse representation with as many XZERO opcodes as
      * needed to represent all the registers. */
     aux = HLL_REGISTERS;
+    // 分配一个稀疏型hll
     s = sdsnewlen(NULL,sparselen);
+    // p指向寄存器开始的位置
     p = (uint8_t*)s + HLL_HDR_SIZE;
+    // 将所有寄存器都初始化为XZERO表示
     while(aux) {
         int xzero = HLL_SPARSE_XZERO_MAX_LEN;
         if (xzero > aux) xzero = aux;
@@ -1164,6 +1198,7 @@ robj *createHLLObject(void) {
     serverAssert((p-(uint8_t*)s) == sparselen);
 
     /* Create the actual object. */
+    // 初始化一个redis object，并设置头部信息
     o = createObject(OBJ_STRING,s);
     hdr = o->ptr;
     memcpy(hdr->magic,"HYLL",4);
@@ -1174,6 +1209,7 @@ robj *createHLLObject(void) {
 /* Check if the object is a String with a valid HLL representation.
  * Return C_OK if this is true, otherwise reply to the client
  * with an error and return C_ERR. */
+// 判断object是否为HLL类型
 int isHLLObjectOrReply(client *c, robj *o) {
     struct hllhdr *hdr;
 
@@ -1207,6 +1243,7 @@ invalid:
 
 /* PFADD var ele ele ele ... ele => :0 or :1 */
 void pfaddCommand(client *c) {
+    // 写操作时找key对应value的方法
     robj *o = lookupKeyWrite(c->db,c->argv[1]);
     struct hllhdr *hdr;
     int updated = 0, j;
@@ -1215,14 +1252,18 @@ void pfaddCommand(client *c) {
         /* Create the key with a string value of the exact length to
          * hold our HLL data structure. sdsnewlen() when NULL is passed
          * is guaranteed to return bytes initialized to zero. */
+        // key不存在，创建一个新的HLL
         o = createHLLObject();
         dbAdd(c->db,c->argv[1],o);
         updated++;
     } else {
+        // key存在，检查类型是否满足
         if (isHLLObjectOrReply(c,o) != C_OK) return;
+        // 因为要根据value修改key的值，因此如果key原来的值是共享的，需要解除共享，新创建一个值对象与key组对
         o = dbUnshareStringValue(c->db,c->argv[1],o);
     }
     /* Perform the low level ADD operation for every element. */
+    // 循环添加
     for (j = 2; j < c->argc; j++) {
         int retval = hllAdd(o, (unsigned char*)c->argv[j]->ptr,
                                sdslen(c->argv[j]->ptr));
@@ -1237,9 +1278,13 @@ void pfaddCommand(client *c) {
     }
     hdr = o->ptr;
     if (updated) {
+        // 当数据库的键被改动，则会调用该函数发送信号(watch)
         signalModifiedKey(c->db,c->argv[1]);
+        // 发送"pfadd"事件通知
         notifyKeyspaceEvent(NOTIFY_STRING,"pfadd",c->argv[1],c->db->id);
+        // 增加数据变化的长度
         server.dirty++;
+        // 标识基数被修改，缓存失效
         HLL_INVALIDATE_CACHE(hdr);
     }
     addReply(c, updated ? shared.cone : shared.czero);
@@ -1255,6 +1300,10 @@ void pfcountCommand(client *c) {
      *
      * When multiple keys are specified, PFCOUNT actually computes
      * the cardinality of the merge of the N HLLs specified. */
+    /*
+     * 多个key进行基数统计时，需要将所有的key merge之后进行统计
+     * 合并之后的HLL类型为RAW
+     */
     if (c->argc > 2) {
         uint8_t max[HLL_HDR_SIZE+HLL_REGISTERS], *registers;
         int j;
@@ -1266,12 +1315,14 @@ void pfcountCommand(client *c) {
         registers = max + HLL_HDR_SIZE;
         for (j = 1; j < c->argc; j++) {
             /* Check type and size. */
+            // key校验
             robj *o = lookupKeyRead(c->db,c->argv[j]);
             if (o == NULL) continue; /* Assume empty HLL for non existing var.*/
             if (isHLLObjectOrReply(c,o) != C_OK) return;
 
             /* Merge with this HLL with our 'max' HHL by setting max[i]
              * to MAX(max[i],hll[i]). */
+            // 合并到registers中，registers为大小为寄存器个数的字节数组，每个字节表示一个寄存器的值
             if (hllMerge(registers,o) == C_ERR) {
                 addReplySds(c,sdsnew(invalid_hll_err));
                 return;
@@ -1279,6 +1330,7 @@ void pfcountCommand(client *c) {
         }
 
         /* Compute cardinality of the resulting set. */
+        // 统计时，只需要将registers字节数组统计出来
         addReplyLongLong(c,hllCount(hdr,NULL));
         return;
     }
@@ -1287,17 +1339,21 @@ void pfcountCommand(client *c) {
      *
      * The user specified a single key. Either return the cached value
      * or compute one and update the cache. */
+    // 单个key统计
     o = lookupKeyWrite(c->db,c->argv[1]);
     if (o == NULL) {
         /* No key? Cardinality is zero since no element was added, otherwise
          * we would have a key as HLLADD creates it as a side effect. */
+        // key不存在
         addReply(c,shared.czero);
     } else {
+        // value校验
         if (isHLLObjectOrReply(c,o) != C_OK) return;
         o = dbUnshareStringValue(c->db,c->argv[1],o);
 
         /* Check if the cached cardinality is valid. */
         hdr = o->ptr;
+        // 如果最高位card为0，说明没有被修改，缓存有效，直接从缓存中取
         if (HLL_VALID_CACHE(hdr)) {
             /* Just return the cached value. */
             card = (uint64_t)hdr->card[0];
@@ -1328,6 +1384,7 @@ void pfcountCommand(client *c) {
              * data structure is not modified, since the cached value
              * may be modified and given that the HLL is a Redis string
              * we need to propagate the change. */
+            // 发送key修改的信号
             signalModifiedKey(c->db,c->argv[1]);
             server.dirty++;
         }
@@ -1346,8 +1403,10 @@ void pfmergeCommand(client *c) {
      * We store the maximum into the max array of registers. We'll write
      * it to the target variable later. */
     memset(max,0,sizeof(max));
+    // 循环合并每个key，最终得到合并后每个寄存器的值 max数组
     for (j = 1; j < c->argc; j++) {
         /* Check type and size. */
+        // key，value检查
         robj *o = lookupKeyRead(c->db,c->argv[j]);
         if (o == NULL) continue; /* Assume empty HLL for non existing var. */
         if (isHLLObjectOrReply(c,o) != C_OK) return;
@@ -1359,6 +1418,7 @@ void pfmergeCommand(client *c) {
 
         /* Merge with this HLL with our 'max' HHL by setting max[i]
          * to MAX(max[i],hll[i]). */
+        // 合并max和o并将寄存器的结果保存到max中
         if (hllMerge(max,o) == C_ERR) {
             addReplySds(c,sdsnew(invalid_hll_err));
             return;
@@ -1366,6 +1426,7 @@ void pfmergeCommand(client *c) {
     }
 
     /* Create / unshare the destination key's value if needed. */
+    // 最终结果合并到第一个key
     robj *o = lookupKeyWrite(c->db,c->argv[1]);
     if (o == NULL) {
         /* Create the key with a string value of the exact length to
@@ -1382,6 +1443,7 @@ void pfmergeCommand(client *c) {
 
     /* Convert the destination object to dense representation if at least
      * one of the inputs was dense. */
+    // 如果合并前的key中有一个是密集型，那么合并后的结果也是密集型
     if (use_dense && hllSparseToDense(o) == C_ERR) {
         addReplySds(c,sdsnew(invalid_hll_err));
         return;
@@ -1389,22 +1451,28 @@ void pfmergeCommand(client *c) {
 
     /* Write the resulting HLL to the destination HLL registers and
      * invalidate the cached value. */
+    // 循环将寄存器中的值加到稀疏（或密集）型的HLL寄存器中
     for (j = 0; j < HLL_REGISTERS; j++) {
         if (max[j] == 0) continue;
         hdr = o->ptr;
         switch(hdr->encoding) {
         case HLL_DENSE: hllDenseSet(hdr->registers,j,max[j]); break;
+        // 稀疏型添加寄存器的值可能导致稀疏型转换为密集型，此时hdr所指的地址空间不再是现在的o->ptr所指的空间
         case HLL_SPARSE: hllSparseSet(o,j,max[j]); break;
         }
     }
     hdr = o->ptr; /* o->ptr may be different now, as a side effect of
                      last hllSparseSet() call. */
+    // 缓存失效
     HLL_INVALIDATE_CACHE(hdr);
 
+    // key修改信号
     signalModifiedKey(c->db,c->argv[1]);
     /* We generate a PFADD event for PFMERGE for semantical simplicity
      * since in theory this is a mass-add of elements. */
+    // 通知事件
     notifyKeyspaceEvent(NOTIFY_STRING,"pfadd",c->argv[1],c->db->id);
+    // 修改的数据的长度+1
     server.dirty++;
     addReply(c,shared.ok);
 }
