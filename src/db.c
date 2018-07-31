@@ -52,14 +52,18 @@ void updateLFU(robj *val) {
 /* Low level key lookup API, not actually called directly from commands
  * implementations that should instead rely on lookupKeyRead(),
  * lookupKeyWrite() and lookupKeyReadWithFlags(). */
+// 从数据库中查询一个key 的value 对象 该函数不直接提供命令查询(底层函数不包含命中等信息记录)
 robj *lookupKey(redisDb *db, robj *key, int flags) {
+    // 查询key空间
     dictEntry *de = dictFind(db->dict,key->ptr);
     if (de) {
+        // 节点存在取出值
         robj *val = dictGetVal(de);
 
         /* Update the access time for the ageing algorithm.
          * Don't do it if we have a saving child, as this will trigger
          * a copy on write madness. */
+        // 更新lru时间信息， 不存在子进程时执行，不然破坏copy-on-write
         if (server.rdb_child_pid == -1 &&
             server.aof_child_pid == -1 &&
             !(flags & LOOKUP_NOTOUCH))
@@ -100,6 +104,7 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
 robj *lookupKeyReadWithFlags(redisDb *db, robj *key, int flags) {
     robj *val;
 
+    // 如果key已经过期
     if (expireIfNeeded(db,key) == 1) {
         /* Key expired. If we are in the context of a master, expireIfNeeded()
          * returns 0 only when the key does not exist at all, so it's safe
@@ -126,7 +131,9 @@ robj *lookupKeyReadWithFlags(redisDb *db, robj *key, int flags) {
             return NULL;
         }
     }
+    // 查询
     val = lookupKey(db,key,flags);
+    // 记录命中和不命中次数
     if (val == NULL)
         server.stat_keyspace_misses++;
     else
@@ -136,6 +143,7 @@ robj *lookupKeyReadWithFlags(redisDb *db, robj *key, int flags) {
 
 /* Like lookupKeyReadWithFlags(), but does not use any flag, which is the
  * common case. */
+// 与 lookupKeyReadWithFlags flag == LOOKUP_NONE
 robj *lookupKeyRead(redisDb *db, robj *key) {
     return lookupKeyReadWithFlags(db,key,LOOKUP_NONE);
 }
@@ -145,17 +153,20 @@ robj *lookupKeyRead(redisDb *db, robj *key) {
  *
  * Returns the linked value object if the key exists or NULL if the key
  * does not exist in the specified DB. */
+// 为了写入而查找key(只过期和查找)
 robj *lookupKeyWrite(redisDb *db, robj *key) {
     expireIfNeeded(db,key);
     return lookupKey(db,key,LOOKUP_NONE);
 }
 
+// 查询一个key 如果key key 不存在 则直接向客户端返回
 robj *lookupKeyReadOrReply(client *c, robj *key, robj *reply) {
     robj *o = lookupKeyRead(c->db, key);
     if (!o) addReply(c,reply);
     return o;
 }
 
+// 为执行写入操作而从数据库中查找返回 key 的值。
 robj *lookupKeyWriteOrReply(client *c, robj *key, robj *reply) {
     robj *o = lookupKeyWrite(c->db, key);
     if (!o) addReply(c,reply);
@@ -166,14 +177,22 @@ robj *lookupKeyWriteOrReply(client *c, robj *key, robj *reply) {
  * counter of the value if needed.
  *
  * The program is aborted if the key already exists. */
+
+// 添加k v 到数据库中， 调用者负责计数
+// 如果key 已经存在则停止
 void dbAdd(redisDb *db, robj *key, robj *val) {
+    // 复制key
     sds copy = sdsdup(key->ptr);
+    // 添加key value
     int retval = dictAdd(db->dict, copy, val);
 
+    // 如果key 已经存在 则停止
     serverAssertWithInfo(NULL,key,retval == DICT_OK);
+    // 如果是以下两种类型则尝试加入到ready 列表中
     if (val->type == OBJ_LIST ||
         val->type == OBJ_ZSET)
         signalKeyAsReady(db, key);
+    // 如果开启了集群模式，那么将键保存到槽里面
     if (server.cluster_enabled) slotToKeyAdd(key);
 }
 
@@ -182,10 +201,12 @@ void dbAdd(redisDb *db, robj *key, robj *val) {
  * This function does not modify the expire time of the existing key.
  *
  * The program is aborted if the key was not already present. */
+// 复写一个已经存在的key  不修改过期时间 如果key 不存在则停止
 void dbOverwrite(redisDb *db, robj *key, robj *val) {
     dictEntry *de = dictFind(db->dict,key->ptr);
-
+    // 节点不存在 则退出
     serverAssertWithInfo(NULL,key,de != NULL);
+    // 设置过期策略 并且故过期策略是lfu 模式
     if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
         robj *old = dictGetVal(de);
         int saved_lru = old->lru;
@@ -204,17 +225,25 @@ void dbOverwrite(redisDb *db, robj *key, robj *val) {
  * 3) The expire time of the key is reset (the key is made persistent).
  *
  * All the new keys in the database should be craeted via this interface. */
+// 设置一个key 无论key 是否春在
+// 增加对象引用计数
+// 如果是监视的key 则发送通知
+// 重置key的过过期时间
 void setKey(redisDb *db, robj *key, robj *val) {
     if (lookupKeyWrite(db,key) == NULL) {
         dbAdd(db,key,val);
     } else {
         dbOverwrite(db,key,val);
     }
+    // 增加引用
     incrRefCount(val);
+    // 删除过期时间
     removeExpire(db,key);
+    // 发送通知
     signalModifiedKey(db,key);
 }
 
+// 判断key 是否存在 存在返回1 不存在返回0
 int dbExists(redisDb *db, robj *key) {
     return dictFind(db->dict,key->ptr) != NULL;
 }
@@ -223,6 +252,8 @@ int dbExists(redisDb *db, robj *key) {
  * If there are no keys, NULL is returned.
  *
  * The function makes sure to return keys not already expired. */
+
+// 随机返回一个未过期的key, db 为空则返回NULL
 robj *dbRandomKey(redisDb *db) {
     dictEntry *de;
     int maxtries = 100;
@@ -1130,12 +1161,15 @@ void propagateExpire(redisDb *db, robj *key, int lazy) {
  * The return value of the function is 0 if the key is still valid,
  * otherwise the function returns 1 if the key is expired. */
 int expireIfNeeded(redisDb *db, robj *key) {
+    // key 过期时间
     mstime_t when = getExpire(db,key);
     mstime_t now;
 
+    // 未设置过期时间
     if (when < 0) return 0; /* No expire for this key */
 
     /* Don't expire anything while loading. It will be done later. */
+    // 加载过程不处理
     if (server.loading) return 0;
 
     /* If we are in the context of a Lua script, we pretend that time is
@@ -1152,16 +1186,22 @@ int expireIfNeeded(redisDb *db, robj *key) {
      * Still we try to return the right information to the caller,
      * that is, 0 if we think the key should be still valid, 1 if
      * we think the key is expired at this time. */
+    // 如果是从节点则不执行删除
     if (server.masterhost != NULL) return now > when;
 
     /* Return when this key has not expired */
+    // 如果没有过期 返回0
     if (now <= when) return 0;
 
     /* Delete the key */
+    // 记录过期key数量
     server.stat_expiredkeys++;
+    // 向其他节点同步信息
     propagateExpire(db,key,server.lazyfree_lazy_expire);
+    // 发送通知事件
     notifyKeyspaceEvent(NOTIFY_EXPIRED,
         "expired",key,db->id);
+    // 同步或者异步删除
     return server.lazyfree_lazy_expire ? dbAsyncDelete(db,key) :
                                          dbSyncDelete(db,key);
 }
