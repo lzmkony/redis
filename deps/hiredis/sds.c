@@ -171,6 +171,7 @@ void sdsfree(sds s) {
  * The output will be "2", but if we comment out the call to sdsupdatelen()
  * the output will be "6" as the string was modified but the logical length
  * remains 6 bytes. */
+// 未调用
 void sdsupdatelen(sds s) {
     int reallen = strlen(s);
     sdssetlen(s, reallen);
@@ -180,6 +181,7 @@ void sdsupdatelen(sds s) {
  * However all the existing buffer is not discarded but set as free space
  * so that next append operations will not require allocations up to the
  * number of bytes previously available. */
+// 清空当前sds 字符串
 void sdsclear(sds s) {
     sdssetlen(s, 0);
     s[0] = '\0';
@@ -191,19 +193,25 @@ void sdsclear(sds s) {
  *
  * Note: this does not change the *length* of the sds string as returned
  * by sdslen(), but only the free buffer space we have. */
+// 扩展buf，使buf长度大于等于字符串+1
 sds sdsMakeRoomFor(sds s, size_t addlen) {
     void *sh, *newsh;
+    // 当前剩余长度
     size_t avail = sdsavail(s);
     size_t len, newlen;
     char type, oldtype = s[-1] & SDS_TYPE_MASK;
     int hdrlen;
 
     /* Return ASAP if there is enough space left. */
+    // 当前可用的完全满足, 不需要扩大
     if (avail >= addlen) return s;
 
+    // 当前字符串长度、空间
     len = sdslen(s);
     sh = (char*)s-sdsHdrSize(oldtype);
+    // 新字符串需要的长度
     newlen = (len+addlen);
+    // 按需分配新空间
     if (newlen < SDS_MAX_PREALLOC)
         newlen *= 2;
     else

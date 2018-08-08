@@ -225,7 +225,7 @@ void dbOverwrite(redisDb *db, robj *key, robj *val) {
  * 3) The expire time of the key is reset (the key is made persistent).
  *
  * All the new keys in the database should be craeted via this interface. */
-// 设置一个key 无论key 是否春在
+// 设置一个key 无论key 是否存在
 // 增加对象引用计数
 // 如果是监视的key 则发送通知
 // 重置key的过过期时间
