@@ -843,15 +843,21 @@ unsigned long dictScan(dict *d,
     const dictEntry *de, *next;
     unsigned long m0, m1;
 
+    // 字典为空则直接返回
     if (dictSize(d) == 0) return 0;
 
+    // 如果当前没有进行rehash
     if (!dictIsRehashing(d)) {
+        // 执行第一个字典
         t0 = &(d->ht[0]);
+        // 记录mask 类似于mod操作值
         m0 = t0->sizemask;
 
         /* Emit entries at cursor */
+        // 执行哈希的槽
         if (bucketfn) bucketfn(privdata, &t0->table[v & m0]);
         de = t0->table[v & m0];
+        // 循环遍历槽中的节点
         while (de) {
             next = de->next;
             fn(privdata, de);
@@ -860,27 +866,34 @@ unsigned long dictScan(dict *d,
 
         /* Set unmasked bits so incrementing the reversed cursor
          * operates on the masked bits */
+
         v |= ~m0;
 
         /* Increment the reverse cursor */
+        // 反转二进制
         v = rev(v);
         v++;
+        // 再次反转二进制
         v = rev(v);
 
     } else {
+        // rehasing 中 分别指向两个hash 表
         t0 = &d->ht[0];
         t1 = &d->ht[1];
 
         /* Make sure t0 is the smaller and t1 is the bigger table */
+        // 排序，确保先遍历小表 在遍历大表
         if (t0->size > t1->size) {
             t0 = &d->ht[1];
             t1 = &d->ht[0];
         }
 
+        // 分别记录两个表的mask
         m0 = t0->sizemask;
         m1 = t1->sizemask;
 
         /* Emit entries at cursor */
+        // 执行槽，迭代槽中的节点
         if (bucketfn) bucketfn(privdata, &t0->table[v & m0]);
         de = t0->table[v & m0];
         while (de) {
@@ -891,10 +904,14 @@ unsigned long dictScan(dict *d,
 
         /* Iterate over indices in larger table that are the expansion
          * of the index pointed to by the cursor in the smaller table */
+        // 迭代大槽，保证全部被遍历
+        // 循环是为了处理 夸多2^N 扩容或者缩容的问题 例如 8 -> 64, 一个槽会被分配到N 个槽中
         do {
             /* Emit entries at cursor */
+            // 获取指向槽的位置
             if (bucketfn) bucketfn(privdata, &t1->table[v & m1]);
             de = t1->table[v & m1];
+            // 循环迭代
             while (de) {
                 next = de->next;
                 fn(privdata, de);
@@ -903,8 +920,10 @@ unsigned long dictScan(dict *d,
 
             /* Increment the reverse cursor not covered by the smaller mask.*/
             v |= ~m1;
+            // 反转
             v = rev(v);
             v++;
+            // 再反转
             v = rev(v);
 
             /* Continue while bits covered by mask difference is non-zero */
