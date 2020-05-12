@@ -35,6 +35,7 @@
 void initClientMultiState(client *c) {
     c->mstate.commands = NULL;
     c->mstate.count = 0;
+    c->mstate.cmd_flags = 0;
 }
 
 /* Release all the resources associated with MULTI/EXEC state */
@@ -67,6 +68,7 @@ void queueMultiCommand(client *c) {
     for (j = 0; j < c->argc; j++)
         incrRefCount(mc->argv[j]);
     c->mstate.count++;
+    c->mstate.cmd_flags |= c->cmd->flags;
 }
 
 void discardTransaction(client *c) {
@@ -104,11 +106,13 @@ void discardCommand(client *c) {
 /* Send a MULTI command to all the slaves and AOF file. Check the execCommand
  * implementation for more information. */
 void execCommandPropagateMulti(client *c) {
-    robj *multistring = createStringObject("MULTI",5);
-
-    propagate(server.multiCommand,c->db->id,&multistring,1,
+    propagate(server.multiCommand,c->db->id,&shared.multi,1,
               PROPAGATE_AOF|PROPAGATE_REPL);
-    decrRefCount(multistring);
+}
+
+void execCommandPropagateExec(client *c) {
+    propagate(server.execCommand,c->db->id,&shared.exec,1,
+              PROPAGATE_AOF|PROPAGATE_REPL);
 }
 
 void execCommand(client *c) {
@@ -132,7 +136,22 @@ void execCommand(client *c) {
      * in the second an EXECABORT error is returned. */
     if (c->flags & (CLIENT_DIRTY_CAS|CLIENT_DIRTY_EXEC)) {
         addReply(c, c->flags & CLIENT_DIRTY_EXEC ? shared.execaborterr :
-                                                  shared.nullmultibulk);
+                                                   shared.nullarray[c->resp]);
+        discardTransaction(c);
+        goto handle_monitor;
+    }
+
+    /* If there are write commands inside the transaction, and this is a read
+     * only slave, we want to send an error. This happens when the transaction
+     * was initiated when the instance was a master or a writable replica and
+     * then the configuration changed (for example instance was turned into
+     * a replica). */
+    if (!server.loading && server.masterhost && server.repl_slave_ro &&
+        !(c->flags & CLIENT_MASTER) && c->mstate.cmd_flags & CMD_WRITE)
+    {
+        addReplyError(c,
+            "Transaction contains write commands but instance "
+            "is now a read-only replica. EXEC aborted.");
         discardTransaction(c);
         goto handle_monitor;
     }
@@ -142,7 +161,7 @@ void execCommand(client *c) {
     orig_argv = c->argv;
     orig_argc = c->argc;
     orig_cmd = c->cmd;
-    addReplyMultiBulkLen(c,c->mstate.count);
+    addReplyArrayLen(c,c->mstate.count);
     for (j = 0; j < c->mstate.count; j++) {
         c->argc = c->mstate.commands[j].argc;
         c->argv = c->mstate.commands[j].argv;
@@ -153,12 +172,29 @@ void execCommand(client *c) {
          * This way we'll deliver the MULTI/..../EXEC block as a whole and
          * both the AOF and the replication link will have the same consistency
          * and atomicity guarantees. */
-        if (!must_propagate && !(c->cmd->flags & (CMD_READONLY|CMD_ADMIN))) {
+        if (!must_propagate &&
+            !server.loading &&
+            !(c->cmd->flags & (CMD_READONLY|CMD_ADMIN)))
+        {
             execCommandPropagateMulti(c);
             must_propagate = 1;
         }
 
-        call(c,CMD_CALL_FULL);
+        int acl_keypos;
+        int acl_retval = ACLCheckCommandPerm(c,&acl_keypos);
+        if (acl_retval != ACL_OK) {
+            addACLLogEntry(c,acl_retval,acl_keypos,NULL);
+            addReplyErrorFormat(c,
+                "-NOPERM ACLs rules changed between the moment the "
+                "transaction was accumulated and the EXEC call. "
+                "This command is no longer allowed for the "
+                "following reason: %s",
+                (acl_retval == ACL_DENIED_CMD) ?
+                "no permission to execute the command or subcommand" :
+                "no permission to touch the specified keys");
+        } else {
+            call(c,server.loading ? CMD_CALL_NONE : CMD_CALL_FULL);
+        }
 
         /* Commands may alter argc/argv, restore mstate. */
         c->mstate.commands[j].argc = c->argc;

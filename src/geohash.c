@@ -127,8 +127,8 @@ int geohashEncode(const GeoHashRange *long_range, const GeoHashRange *lat_range,
 
     /* Return an error when trying to index outside the supported
      * constraints. */
-    if (longitude > 180 || longitude < -180 ||
-        latitude > 85.05112878 || latitude < -85.05112878) return 0;
+    if (longitude > GEO_LONG_MAX || longitude < GEO_LONG_MIN ||
+        latitude > GEO_LAT_MAX || latitude < GEO_LAT_MIN) return 0;
 
     hash->bits = 0;
     hash->step = step;
@@ -206,7 +206,11 @@ int geohashDecodeWGS84(const GeoHashBits hash, GeoHashArea *area) {
 int geohashDecodeAreaToLongLat(const GeoHashArea *area, double *xy) {
     if (!xy) return 0;
     xy[0] = (area->longitude.min + area->longitude.max) / 2;
+    if (xy[0] > GEO_LONG_MAX) xy[0] = GEO_LONG_MAX;
+    if (xy[0] < GEO_LONG_MIN) xy[0] = GEO_LONG_MIN;
     xy[1] = (area->latitude.min + area->latitude.max) / 2;
+    if (xy[1] > GEO_LAT_MAX) xy[1] = GEO_LAT_MAX;
+    if (xy[1] < GEO_LAT_MIN) xy[1] = GEO_LAT_MIN;
     return 1;
 }
 
